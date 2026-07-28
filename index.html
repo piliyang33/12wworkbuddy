@@ -121,6 +121,11 @@
   [data-drop="rest"]{min-height:8px;}
   .md-title{font-size:12.5px; font-weight:800; color:#c2410c; margin-bottom:5px;}
   .md-rest-title{font-size:12px; font-weight:800; color:var(--muted); margin:2px 0 5px;}
+  /* 拖拽手柄：只在每条任务最左边，必须抓它才能拖动，避免下滑误触 */
+  .grip{flex:0 0 auto;width:20px;align-self:stretch;min-height:22px;display:flex;align-items:center;justify-content:center;margin-right:-6px;color:var(--muted);cursor:grab;font-size:12px;line-height:1;-webkit-user-select:none;user-select:none;touch-action:none;}
+  .grip::before{content:'⋮⋮';letter-spacing:1px;}
+  .grip:active{color:var(--indigo);}
+  .it-title,.h-title,.ph-name{cursor:pointer;}
   .pdot{display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:middle; flex:0 0 auto;}
   .due-badge{font-size:10px; color:var(--muted); margin-left:6px;}
   .due-badge.urgent{color:var(--rose); font-weight:800;}
@@ -152,6 +157,21 @@
   .item.done .it-title{text-decoration:line-through; color:var(--muted);}
   .it-title{font-size:14px; font-weight:600; flex:1; line-height:1.35;}
   .itag{font-size:10px; padding:1px 6px; border-radius:999px; background:var(--soft); color:var(--indigo); font-weight:700; white-space:nowrap; flex:0 0 auto; margin-top:3px;}
+
+  /* 子任务：展开箭头与进度 */
+  .sub-caret{display:inline-block;width:14px;text-align:center;color:var(--muted);cursor:pointer;font-size:11px;user-select:none;-webkit-user-select:none;margin-right:2px;}
+  .sub-caret.open{color:var(--indigo);}
+  .sub-count{font-size:10px;color:var(--muted);margin-left:4px;font-weight:700;}
+  /* 子任务行：缩进+虚线树状 */
+  .item.sub{margin-left:24px;padding-left:10px;border-left:2px dashed var(--line);}
+  .item.sub .it-title{font-size:12.5px;font-weight:500;}
+  .item.sub .chk{width:18px;height:18px;font-size:11px;margin-top:3px;border-width:1.5px;}
+  .item.sub.done .it-title{text-decoration:line-through;color:var(--muted);}
+  /* 编辑弹窗内子任务编辑行 */
+  .subedit-row{display:flex;align-items:center;gap:6px;margin:6px 0;}
+  .subedit-row .sub-done{flex:0 0 auto;width:18px;height:18px;}
+  .subedit-row .sub-title{flex:1;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:14px;}
+  .subedit-row .sub-x{flex:0 0 auto;color:var(--rose);background:none;border:none;font-size:16px;cursor:pointer;padding:4px 8px;}
 
   /* habit day-grid */
   .habit-item{padding:8px 0; border-bottom:1px solid #f1f5f9;}
@@ -320,6 +340,7 @@ function syncAnchor(){
 }
 let state = load();
 const PERSONAL_ID = '__personal__';
+let _openSubs = new Set(); // 子任务展开态（内存，不持久化）
 function ensurePersonal(){
   if(!state.goals.find(g=>g.id===PERSONAL_ID)){
     state.goals.push({id:PERSONAL_ID,title:'个人习惯',background:'',lagging:[],habits:[],tasks:[],_personal:true});
@@ -333,43 +354,55 @@ function load(){
   return defaultState();
 }
 function migrate(s){
-  if(!s.version || s.version<2){
-    s.currentDay = s.currentDay!=null ? s.currentDay : todayWeekday();
-    if(s.anchor===undefined) s.anchor=null;
-    if(s.viewWeek===undefined) s.viewWeek=(s.currentWeek||1);
-    // 滞后指标迁移
-    (s.goals||[]).forEach(g=>{
-      if(typeof g.lagging==='string'){ g.lagging=g.lagging?[{id:uid(),name:g.lagging,target:null,dir:'up'}]:[]; }
-      if(!Array.isArray(g.lagging)) g.lagging=[];
-      g.lagging.forEach(it=>{
-        if(!it||typeof it==='string') it={id:uid(),name:String(it||''),target:null,dir:'up'};
-        if(!it.id) it.id=uid();
-        if(typeof it.name!=='string') it.name=(typeof it.text==='string')?it.text:String(it.name||'');
-        it.target=(it.target==null||it.target==='')?null:Number(it.target);
-        it.dir=(it.dir==='down')?'down':'up';
+  if(!s.version || s.version<3){
+    if(!s.version || s.version<2){
+      s.currentDay = s.currentDay!=null ? s.currentDay : todayWeekday();
+      if(s.anchor===undefined) s.anchor=null;
+      if(s.viewWeek===undefined) s.viewWeek=(s.currentWeek||1);
+      // 滞后指标迁移
+      (s.goals||[]).forEach(g=>{
+        if(typeof g.lagging==='string'){ g.lagging=g.lagging?[{id:uid(),name:g.lagging,target:null,dir:'up'}]:[]; }
+        if(!Array.isArray(g.lagging)) g.lagging=[];
+        g.lagging.forEach(it=>{
+          if(!it||typeof it==='string') it={id:uid(),name:String(it||''),target:null,dir:'up'};
+          if(!it.id) it.id=uid();
+          if(typeof it.name!=='string') it.name=(typeof it.text==='string')?it.text:String(it.name||'');
+          it.target=(it.target==null||it.target==='')?null:Number(it.target);
+          it.dir=(it.dir==='down')?'down':'up';
+        });
+        delete g.leading;
       });
-      delete g.leading;
-      // 任务：补齐优先级/截止/必做字段
+      // habitLog: number → [bool×7]
+      if(s.habitLog) Object.keys(s.habitLog).forEach(hid=>{
+        const weeks=s.habitLog[hid]; if(!weeks||typeof weeks!=='object') return;
+        Object.keys(weeks).forEach(w=>{
+          const v=weeks[w];
+          if(typeof v==='number'){ weeks[w]=makeDays(v); }
+          else if(Array.isArray(v)&&v.length===7){ /* already new format */ }
+          else { weeks[w]=makeDays(0); }
+        });
+      });
+    }
+    // v3：子任务字段迁移（对所有任务统一补齐）
+    (s.goals||[]).forEach(g=>{
+      // 任务：补齐优先级/截止/必做/子任务
       (g.tasks||[]).forEach(t=>{
         if(!t.priority||!['low','mid','high'].includes(t.priority)) t.priority='mid';
         if(t.due===undefined) t.due=null;
         if(t.mustDo===undefined) t.mustDo=false;
         if(!t.log) t.log={};
+        if(!Array.isArray(t.subtasks)) t.subtasks=[];
+        t.subtasks.forEach(s=>{
+          if(!s||typeof s!=='object') s={id:uid(),title:String(s||''),done:false};
+          if(!s.id) s.id=uid();
+          if(typeof s.title!=='string') s.title='';
+          if(typeof s.done!=='boolean') s.done=false;
+        });
       });
       if(!Array.isArray(g.habits)) g.habits=[];
       (g.habits||[]).forEach(hb=>{ if(hb.startDate===undefined) hb.startDate=null; if(!hb.log) hb.log={}; if(!Array.isArray(hb.weeks)) hb.weeks=[]; });
     });
-    // habitLog: number → [bool×7]
-    if(s.habitLog) Object.keys(s.habitLog).forEach(hid=>{
-      const weeks=s.habitLog[hid]; if(!weeks||typeof weeks!=='object') return;
-      Object.keys(weeks).forEach(w=>{
-        const v=weeks[w];
-        if(typeof v==='number'){ weeks[w]=makeDays(v); }
-        else if(Array.isArray(v)&&v.length===7){ /* already new format */ }
-        else { weeks[w]=makeDays(0); }
-      });
-    });
-    s.version=2;
+    s.version=3;
   }
   return s;
 }
@@ -541,14 +574,13 @@ function viewToday(){
   h+=`<div class="mini-cap">本周任务完成度 ${sc.tasksPct!=null?sc.tasksPct+'%':'—'} · ${sc.tasksDone}/${sc.tasksDue}</div>`;
   if(tasks.length===0) h+=`<p class="empty">今天没有待办任务。</p>`;
   else{
-    // 今天必做（始终渲染为拖拽目标，即使为空也能拖入）
-    h+=`<div class="mustdo-zone" data-drop="mustdo"><div class="md-title">🔴 今天必做 (${mustDo.length})</div>`;
+    // 今天必做（纯放置区：整块可接收拖入的任务，区域本身不加手柄）
+    h+=`<div class="mustdo-zone" data-drop="mustdo"><div class="row between" style="margin-bottom:4px"><div class="md-title">🔴 今天必做 (${mustDo.length})</div></div>`;
     mustDo.forEach(x=>{ h+=todayTaskItem(x,w); });
-    if(mustDo.length===0) h+=`<div class="md-empty">把下面「本周待办」里的任务拖到这里</div>`;
+    if(mustDo.length===0) h+=`<div class="md-empty">拖动「本周待办」任务左侧的 ⋮⋮ 手柄到这里</div>`;
     h+=`</div>`;
-    // 本周待办（拖回这里可取消「今天必做」）
-    h+=`<div class="md-rest-title">📋 本周待办 (${rest.length})</div>`;
-    h+=`<div data-drop="rest">`;
+    // 本周待办（每条任务最左边有手柄，必须抓手柄才能拖动）
+    h+=`<div data-drop="rest"><div class="row between" style="margin-bottom:4px"><div class="md-rest-title">📋 本周待办 (${rest.length})</div></div>`;
     if(rest.length>0){
       rest.forEach(x=>{ h+=todayTaskItem(x,w); });
     } else if(mustDo.length>0){
@@ -560,8 +592,8 @@ function viewToday(){
       if(undoneTasks.length===0) h+=`<p class="muted" style="padding:2px 0 4px;margin:0">🎉 今天任务都完成了！</p>`;
       h+=`<div class="done-list">`;
       doneTasks.forEach(x=>{
-        h+=`<div class="item done" data-act="task-toggle" data-g="${x.g.id}" data-t="${x.t.id}" data-w="${w}">
-          <div class="chk">✓</div><div class="it-title">${esc(x.t.title)}</div><span class="itag">${esc(trunc(x.g.title,6))}</span></div>`;
+        h+=`<div class="item done" data-g="${x.g.id}" data-t="${x.t.id}" data-w="${w}">
+          <div class="chk" data-act="task-toggle" data-g="${x.g.id}" data-t="${x.t.id}" data-w="${w}">✓</div><div class="it-title" data-act="task-edit" data-g="${x.g.id}" data-t="${x.t.id}" data-w="${w}">${subCaretHTML(x.g,x.t,w,true)}${esc(x.t.title)}</div><span class="itag">${esc(trunc(x.g.title,6))}</span></div>${subRowsHTML(x.g,x.t,w)}`;
       });
       h+=`</div>`;
     }
@@ -575,12 +607,26 @@ function viewToday(){
   if(habits.length===0) h+=`<p class="empty">本周没有安排习惯。</p>`;
   else{
     h+=`<div class="day-names">${DAY_NAMES.map((n,i)=>`<span${i===d?' style="color:var(--indigo);font-weight:800;"':''}>${n}</span>`).join('')}</div>`;
+    habits.sort((a,b)=>{
+      const pa=a.hb.perWeek||1, pb=b.hb.perWeek||1;
+      const da=getHabitDays(a.hb.id,w).filter(Boolean).length;
+      const db=getHabitDays(b.hb.id,w).filter(Boolean).length;
+      const pctA=pa?Math.round(da/pa*100):0;
+      const pctB=pb?Math.round(db/pb*100):0;
+      // ① 已完成 100% 的放最后
+      if(pctA>=100 && pctB<100) return 1;
+      if(pctB>=100 && pctA<100) return -1;
+      // ② 频率高的排前
+      if(pb!==pa) return pb-pa;
+      // ③ 同频率：完成率低的放前
+      return pctA-pctB;
+    });
     habits.forEach(x=>{
       const days=getHabitDays(x.hb.id,w);
       const done=days.filter(Boolean).length;
       const plan=x.hb.perWeek||1;
       const pct=plan?Math.round(done/plan*100):0;
-      h+=`<div class="habit-item" data-gid="${x.g.id}" data-hid="${x.hb.id}"><div class="h-head"><div class="h-title">${esc(x.hb.title)}</div><div class="h-pct">${pct}%</div></div><div class="h-sub">计划每周 ${plan} 次 · <span class="itag" style="display:inline-block;margin:0">${esc(trunc(x.g.title,6))}</span></div><div class="day-grid">`;
+      h+=`<div class="habit-item" data-gid="${x.g.id}" data-hid="${x.hb.id}"><div class="h-head"><div class="h-title" data-act="habit-edit" data-gid="${x.g.id}" data-hid="${x.hb.id}">${esc(x.hb.title)}</div><div class="h-pct">${pct}%</div></div><div class="h-sub">计划每周 ${plan} 次 · <span class="itag" style="display:inline-block;margin:0">${esc(trunc(x.g.title,6))}</span></div><div class="day-grid">`;
       for(let di=0;di<7;di++){
         const isOn=days[di];
         const cls=isOn?' on':'';
@@ -607,17 +653,39 @@ function viewToday(){
 
   h+=`</div>`; return h;
 }
+/* ===== 子任务渲染 helper ===== */
+function subRowsHTML(g,t,w){
+  if(!t.subtasks||!t.subtasks.length) return '';
+  if(!_openSubs.has(t.id)) return '';
+  return t.subtasks.map(s=>
+    `<div class="item sub${s.done?' done':''}" data-g="${g.id}" data-t="${t.id}" data-st="${s.id}" data-w="${w}">
+      <div class="chk" data-act="sub-toggle" data-g="${g.id}" data-t="${t.id}" data-st="${s.id}" data-w="${w}">${s.done?'✓':''}</div>
+      <div class="it-title" data-act="sub-edit" data-g="${g.id}" data-t="${t.id}" data-w="${w}">${esc(s.title)}</div>
+    </div>`
+  ).join('');
+}
+function subCaretHTML(g,t,w,isDone){
+  if(!t.subtasks||!t.subtasks.length) return '';
+  const open=_openSubs.has(t.id);
+  const cnt=t.subtasks.length, doneCnt=t.subtasks.filter(s=>s.done).length;
+  const caret=`<span class="sub-caret${open?' open':''}" data-act="sub-toggle-open" data-g="${g.id}" data-t="${t.id}" data-w="${w}">${open?'▾':'▸'}</span>`;
+  const badge=isDone?'':` <span class="sub-count">${doneCnt}/${cnt}</span>`;
+  return caret+badge;
+}
 function todayTaskItem(x,w){
   const t=x.t;
   const pr=t.priority||'mid';
   const prColor=pr==='high'?'var(--rose)':pr==='low'?'var(--muted)':'var(--amber)';
   const urg=isUrgent(t);
   const dueTxt=t.due?`📅 ${t.due.slice(5)}`:'';
-  return `<div class="item" draggable="true" data-drag-task="${t.id}" data-drag-gid="${x.g.id}" data-act="task-toggle" data-g="${x.g.id}" data-t="${t.id}" data-w="${w}" style="${urg?'border-left:3px solid var(--rose);':''}">
-    <div class="chk"></div>
-    <div class="it-title"><span class="pdot" style="background:${prColor}"></span>${esc(t.title)} ${urg?`<span class="due-badge urgent">🔴 今天到期</span>`:(dueTxt?`<span class="due-badge">${dueTxt}</span>`:'')}</div>
+  const gripTitle = t.mustDo ? '拖回「本周待办」' : '拖动我到「今天必做」';
+  const grip=`<div class="grip" draggable="true" title="${gripTitle}"></div>`;
+  return `<div class="item" data-drag-task="${t.id}" data-drag-gid="${x.g.id}" data-g="${x.g.id}" data-t="${t.id}" data-w="${w}" style="${urg?'border-left:3px solid var(--rose);':''}">
+    ${grip}
+    <div class="chk" data-act="task-toggle" data-g="${x.g.id}" data-t="${t.id}" data-w="${w}"></div>
+    <div class="it-title" data-act="task-edit" data-g="${x.g.id}" data-t="${t.id}" data-w="${w}"><span class="pdot" style="background:${prColor}"></span>${subCaretHTML(x.g,t,w,false)}${esc(t.title)} ${urg?`<span class="due-badge urgent">🔴 今天到期</span>`:(dueTxt?`<span class="due-badge">${dueTxt}</span>`:'')}</div>
     <span class="itag">${esc(trunc(x.g.title,6))}</span>
-  </div>`;
+  </div>${subRowsHTML(x.g,t,w)}`;
 }
 function trunc(s,len){ return (s||'').length>len?s.slice(0,len)+'…':s; }
 
@@ -665,7 +733,7 @@ function viewProjects(){
       const days=getHabitDays(hb.id,w);
       const done=days.filter(Boolean).length;
       const plan=hb.perWeek||1;
-      h+=`<div class="ph-item" data-gid="${PERSONAL_ID}" data-hid="${hb.id}"><div class="ph-name">${esc(hb.title)}</div><div class="ph-sub">本周 ${done}/${plan} 次 · 始于 ${hb.startDate||'—'}</div></div>`;
+      h+=`<div class="ph-item" data-gid="${PERSONAL_ID}" data-hid="${hb.id}"><div class="ph-name" data-act="habit-edit" data-gid="${PERSONAL_ID}" data-hid="${hb.id}">${esc(hb.title)}</div><div class="ph-sub">本周 ${done}/${plan} 次 · 始于 ${hb.startDate||'—'}</div></div>`;
     });
     h+=`</div><button class="btn sm full" data-act="proj-open" data-gid="${PERSONAL_ID}" style="margin-top:8px">管理 / 打卡 →</button></div>`;
   } else {
@@ -716,7 +784,7 @@ function viewProjectDetail(gid){
       const done=days.filter(Boolean).length;
       const plan=hb.perWeek||1;
       const pct=plan?Math.round(done/plan*100):0;
-      h+=`<div class="habit-item" data-gid="${g.id}" data-hid="${hb.id}"><div class="h-head"><div class="h-title">${esc(hb.title)}</div><div class="h-pct">${pct}%</div></div><div class="h-sub">始于 ${hb.startDate||'—'} · 本周 ${done}/${plan} 次</div><div class="day-grid">`;
+      h+=`<div class="habit-item" data-gid="${g.id}" data-hid="${hb.id}"><div class="h-head"><div class="h-title" data-act="habit-edit" data-gid="${g.id}" data-hid="${hb.id}">${esc(hb.title)}</div><div class="h-pct">${pct}%</div></div><div class="h-sub">始于 ${hb.startDate||'—'} · 本周 ${done}/${plan} 次</div><div class="day-grid">`;
       for(let di=0;di<7;di++){const isOn=days[di];const cls=isOn?' on':'';const fut=(di>state.currentDay)?' future':'';h+=`<div class="day-chk${cls}${fut}" data-act="habit-day" data-hid="${hb.id}" data-w="${w}" data-d="${di}">${isOn?'✓':''}</div>`;}
       h+=`</div></div>`;
     });
@@ -742,7 +810,7 @@ function viewProjectDetail(gid){
       anyTask=true;
       wkTasks.forEach(t=>{
         const done=!!(t.log&&t.log[wi]);
-        h+=`<div class="item${done?' done':''}" draggable="true" data-drag-task="${t.id}" data-drag-gid="${g.id}" data-act="task-toggle" data-g="${g.id}" data-t="${t.id}" data-w="${wi}"><div class="chk">${done?'✓':''}</div><div class="it-title">${esc(t.title)}</div></div>`;
+        h+=`<div class="item${done?' done':''}" data-drag-task="${t.id}" data-drag-gid="${g.id}" data-g="${g.id}" data-t="${t.id}" data-w="${wi}"><div class="grip" draggable="true" title="拖动到其他周"></div><div class="chk" data-act="task-toggle" data-g="${g.id}" data-t="${t.id}" data-w="${wi}">${done?'✓':''}</div><div class="it-title" data-act="task-edit" data-g="${g.id}" data-t="${t.id}" data-w="${wi}">${subCaretHTML(g,t,wi,done)}${esc(t.title)}</div></div>${subRowsHTML(g,t,wi)}`;
       });
     }
     h+=`</div></div>`;
@@ -836,6 +904,12 @@ function viewReviewDetail(gid){
   const lags=g.lagging||[];
 
   let h=`<div class="page-header"><div class="ph-row"><div><h1>📊 ${esc(g.title)}</h1><p>第 ${w} 周复盘详情</p></div><button class="help-btn" data-act="review-back">← 返回</button></div></div>`;
+  // 周切换：上一周 / 下一周（不退回主页面）
+  h+=`<div class="pad" style="padding-bottom:0"><div class="row between" style="margin:0 0 8px">
+    <button class="btn sm${w<=1?' ghost':''}" data-act="review-prev-week" data-gid="${g.id}" data-w="${w}">◀ 第${w>1?w-1:1}周</button>
+    <span class="muted" style="font-size:12px;font-weight:700">第 ${w}/12 周</span>
+    <button class="btn sm${w>=12?' ghost':''}" data-act="review-next-week" data-gid="${g.id}" data-w="${w}">第${w<12?w+1:12}周 ▶</button>
+  </div></div>`;
   h+=`<div class="pad">`;
 
   // 区域一：滞后指标（可填实际值）
@@ -877,13 +951,13 @@ function viewReviewDetail(gid){
     if(doneTasks.length>0){
       h+=`<div class="sec-title" style="margin-top:8px">已完成 (${doneTasks.length})</div>`;
       doneTasks.forEach(t=>{
-        h+=`<div class="item done" data-act="task-toggle" data-g="${g.id}" data-t="${t.id}" data-w="${w}"><div class="chk">✓</div><div class="it-title">${esc(t.title)}</div></div>`;
+        h+=`<div class="item done" data-g="${g.id}" data-t="${t.id}" data-w="${w}"><div class="chk" data-act="task-toggle" data-g="${g.id}" data-t="${t.id}" data-w="${w}">✓</div><div class="it-title" data-act="task-edit" data-g="${g.id}" data-t="${t.id}" data-w="${w}">${subCaretHTML(g,t,w,true)}${esc(t.title)}</div></div>${subRowsHTML(g,t,w)}`;
       });
     }
     if(undoneTasks.length>0){
       h+=`<div class="sec-title" style="margin-top:8px">未完成 (${undoneTasks.length})</div>`;
       undoneTasks.forEach(t=>{
-        h+=`<div class="item" data-act="task-toggle" data-g="${g.id}" data-t="${t.id}" data-w="${w}"><div class="chk"></div><div class="it-title">${esc(t.title)}</div><button class="btn-nextwk" data-act="task-move-next" data-gid="${g.id}" data-tid="${t.id}" data-w="${w}">复制到下一週 →</button></div>`;
+        h+=`<div class="item" data-g="${g.id}" data-t="${t.id}" data-w="${w}"><div class="chk" data-act="task-toggle" data-g="${g.id}" data-t="${t.id}" data-w="${w}"></div><div class="it-title" data-act="task-edit" data-g="${g.id}" data-t="${t.id}" data-w="${w}">${subCaretHTML(g,t,w,false)}${esc(t.title)}</div><button class="btn-nextwk" data-act="task-move-next" data-gid="${g.id}" data-tid="${t.id}" data-w="${w}">复制到下一週 →</button></div>${subRowsHTML(g,t,w)}`;
       });
     }
   }
@@ -905,7 +979,7 @@ function viewReviewDetail(gid){
       const done=days.filter(Boolean).length;
       const plan=hb.perWeek||1;
       const pct=plan?Math.round(done/plan*100):0;
-      h+=`<div class="habit-item"><div class="h-head"><div class="h-title">${esc(hb.title)}</div><div class="h-pct">${pct}%</div></div><div class="h-sub">${done}/${plan}次</div><div class="day-grid">`;
+      h+=`<div class="habit-item"><div class="h-head"><div class="h-title" data-act="habit-edit" data-gid="${g.id}" data-hid="${hb.id}">${esc(hb.title)}</div><div class="h-pct">${pct}%</div></div><div class="h-sub">${done}/${plan}次</div><div class="day-grid">`;
       for(let di=0;di<7;di++){const isOn=days[di];const cls=isOn?' on':'';const fut=(di>state.currentDay)?' future':'';h+=`<div class="day-chk${cls}${fut}" data-act="habit-day" data-hid="${hb.id}" data-w="${w}" data-d="${di}">${isOn?'✓':''}</div>`;}
       h+=`</div></div>`;
     });
@@ -1016,26 +1090,10 @@ function bindView(){
 let _lpBound=false,_lpTimer=null,_lpTarget=null,_lpFired=false,_lpX=0,_lpY=0;
 function bindLongPress(){
   if(_lpBound)return; _lpBound=true;
-  const clear=()=>{ if(_lpTimer){clearTimeout(_lpTimer);_lpTimer=null;} _lpTarget=null; };
-  document.addEventListener('pointerdown',e=>{
-    const el=e.target.closest('.item[data-g][data-t], .habit-item[data-gid][data-hid], .ph-item[data-gid][data-hid]');
-    if(!el)return;
-    _lpTarget=el; _lpFired=false; _lpX=e.clientX; _lpY=e.clientY;
-    _lpTimer=setTimeout(()=>{
-      _lpFired=true;
-      const g=el.dataset.g||el.dataset.gid;
-      if(el.classList.contains('item')) openQuickEditTask(g, el.dataset.t);
-      else openQuickEditHabit(g, el.dataset.hid);
-    },500);
-  },{passive:true});
-  document.addEventListener('pointermove',e=>{
-    if(_lpTimer&&(Math.abs(e.clientX-_lpX)>10||Math.abs(e.clientY-_lpY)>10))clear();
-  },{passive:true});
-  document.addEventListener('pointerup',clear,{passive:true});
-  document.addEventListener('pointercancel',clear,{passive:true});
-  // 长按触发后的那次 click 要吞掉，避免误勾选 / 误打卡
+  // 任务=点方框完成/点标题编辑；习惯=点标题编辑。长按编辑已取消。
+  // 仅保留：点左侧拖拽手柄时不触发勾选或编辑。
   document.addEventListener('click',e=>{
-    if(_lpFired){ _lpFired=false; e.preventDefault(); e.stopPropagation(); }
+    if(e.target.closest('.grip')){ e.preventDefault(); e.stopPropagation(); }
   },true);
 }
 document.addEventListener('click',async(e)=>{
@@ -1087,10 +1145,46 @@ document.addEventListener('click',async(e)=>{
       toast('✅ 已绑定真实日期，本周=第 '+state.currentWeek+' 周');
     }
 
-    // 任务勾选
+    // 任务勾选（点左方框）
     else if(act==='task-toggle'){
       const g=findGoal(t.dataset.g),tk=g.tasks.find(x=>x.id===t.dataset.t);
       tk.log[t.dataset.w]=!tk.log[t.dataset.w];save();render();
+    }
+    // 任务编辑（点标题）
+    else if(act==='task-edit'){
+      openQuickEditTask(t.dataset.g, t.dataset.t);
+    }
+    // 习惯编辑（点标题）
+    else if(act==='habit-edit'){
+      openQuickEditHabit(t.dataset.gid, t.dataset.hid);
+    }
+    // 子任务勾选
+    else if(act==='sub-toggle'){
+      const g=findGoal(t.dataset.g), tk=g.tasks.find(x=>x.id===t.dataset.t);
+      if(!tk||!tk.subtasks)return;
+      const s=tk.subtasks.find(y=>y.id===t.dataset.st); if(!s)return;
+      s.done=!s.done; save(); render();
+    }
+    // 子任务标题 → 打开父任务编辑
+    else if(act==='sub-edit'){
+      openQuickEditTask(t.dataset.g, t.dataset.t);
+    }
+    // 展开/折叠子任务列表
+    else if(act==='sub-toggle-open'){
+      const id=t.dataset.t;
+      if(_openSubs.has(id)) _openSubs.delete(id); else _openSubs.add(id);
+      render();
+    }
+    // 子任务：弹窗内新增一行
+    else if(act==='sub-add'){
+      const list=document.getElementById('sub-list'); if(!list)return;
+      const row=document.createElement('div'); row.className='subedit-row';
+      row.innerHTML=`<input type="checkbox" class="sub-done"/><input class="sub-title" placeholder="子任务内容"/><button class="sub-x" data-act="sub-del">✕</button>`;
+      list.appendChild(row);
+    }
+    // 子任务：弹窗内删除行
+    else if(act==='sub-del'){
+      const row=t.closest('.subedit-row'); if(row) row.remove();
     }
 
     // 习惯每日打卡
@@ -1105,6 +1199,17 @@ document.addEventListener('click',async(e)=>{
 
     // 复盘页：项目卡片 → 详情 / 返回
     else if(act==='review-back'){currentReviewGid=null;render();}
+    // 复盘详情页：上一周 / 下一周
+    else if(act==='review-prev-week'){
+      const gid=t.dataset.gid, cur=+t.dataset.w;
+      if(cur<=1){toast('已经是第 1 周');return;}
+      state.viewWeek=cur-1; save(); render();
+    }
+    else if(act==='review-next-week'){
+      const gid=t.dataset.gid, cur=+t.dataset.w;
+      if(cur>=12){toast('已经是第 12 周');return;}
+      state.viewWeek=cur+1; save(); render();
+    }
     // 卡片右上角「查看该周详情」按钮：效果同点柱子，直接进当前所看周的详情
     else if(act==='rev-week-detail'){currentReviewGid=t.dataset.gid;render();}
     // 点柱子 → 直接弹出该项目、该周的详情页（不再需要点卡片）
@@ -1120,7 +1225,8 @@ document.addEventListener('click',async(e)=>{
       const g=findGoal(gid);if(!g)return;
       const tk=g.tasks.find(x=>x.id===tid);if(!tk)return;
       const nextW=Math.min(12,curW+1);
-      const copy={id:uid(),title:tk.title,week:nextW,log:{},priority:tk.priority,due:tk.due,mustDo:tk.mustDo};
+      const copy={id:uid(),title:tk.title,week:nextW,log:{},priority:tk.priority,due:tk.due,mustDo:tk.mustDo,
+        subtasks:(tk.subtasks||[]).map(s=>({id:uid(),title:s.title,done:false}))};
       g.tasks.push(copy);save();render();toast(`已复制到第 ${nextW} 周（本周完成率不变）`);
     }
 
@@ -1146,8 +1252,20 @@ document.addEventListener('click',async(e)=>{
       const title=document.getElementById('qat-title').value.trim();
       if(!title){toast('请填写任务名');return;}
       const g=findGoal(quickAddGid);if(!g)return;
+      const pr=document.getElementById('qat-priority').value;
+      const due=document.getElementById('qat-due').value||null;
+      // 读取子任务
+      const list=document.getElementById('sub-list');
+      const subs=[];
+      if(list){
+        list.querySelectorAll('.subedit-row').forEach(row=>{
+          const stitle=(row.querySelector('.sub-title').value||'').trim();
+          if(!stitle) return;
+          subs.push({ id:uid(), title:stitle, done:!!row.querySelector('.sub-done').checked });
+        });
+      }
       g.tasks=g.tasks||[];
-      g.tasks.push({id:uid(),title,week:quickAddWk,log:{},priority:'mid',due:null,mustDo:false});
+      g.tasks.push({id:uid(),title,week:quickAddWk,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
       save();closeModal();render();toast('已添加到第 '+quickAddWk+' 周');
     }
     // 详情页任务按周折叠
@@ -1168,8 +1286,18 @@ document.addEventListener('click',async(e)=>{
       const due=document.getElementById('tat-due').value||null;
       if(!gid||!title){toast('请填写完整');return;}
       const g=findGoal(gid);if(!g)return;
+      // 读取子任务
+      const list=document.getElementById('sub-list');
+      const subs=[];
+      if(list){
+        list.querySelectorAll('.subedit-row').forEach(row=>{
+          const stitle=(row.querySelector('.sub-title').value||'').trim();
+          if(!stitle) return;
+          subs.push({ id:uid(), title:stitle, done:!!row.querySelector('.sub-done').checked });
+        });
+      }
       g.tasks=g.tasks||[];
-      g.tasks.push({id:uid(),title,week:wv?+wv:state.currentWeek,log:{},priority:pr,due:due,mustDo:false});
+      g.tasks.push({id:uid(),title,week:wv?+wv:state.currentWeek,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
       save();closeModal();render();toast('已添加');
     }
     else if(act==='today-habit-save'){
@@ -1235,6 +1363,17 @@ document.addEventListener('click',async(e)=>{
       tk.priority=document.getElementById('qet-priority').value;
       tk.due=document.getElementById('qet-due').value||null;
       tk.week=+document.getElementById('qet-week').value;
+      // 保存子任务
+      const list=document.getElementById('sub-list');
+      const subs=[];
+      if(list){
+        list.querySelectorAll('.subedit-row').forEach(row=>{
+          const title=(row.querySelector('.sub-title').value||'').trim();
+          if(!title) return;
+          subs.push({ id: row.dataset.st || uid(), title, done: !!row.querySelector('.sub-done').checked });
+        });
+      }
+      tk.subtasks=subs;
       save();closeModal();render();toast('已保存');
     }
     else if(act==='qet-del'){
@@ -1394,8 +1533,13 @@ function openReviewAddTask(){
     <h2>+ 添加任务</h2>
     <label class="fld">所属项目</label><select id="rag-goal">${opts}</select>
     <label class="fld">任务名称</label><input id="rag-title" placeholder="如：发布第一篇小红书笔记"/>
+    <label class="fld">优先级</label><select id="rag-priority">${['low','mid','high'].map(p=>`<option value="${p}"${p==='mid'?' selected':''}>${p==='high'?'高':p==='mid'?'中':'低'}</option>`).join('')}</select>
+    <label class="fld">截止日期（可选）</label><input id="rag-due" type="date"/>
     <label class="fld">安排周次（留空 = 当前第 ${state.currentWeek} 周）</label>
     <select id="rag-week"><option value="">当前周（第 ${state.currentWeek} 周）</option>${weekOpts(state.currentWeek)}</select>
+    <label class="fld">📋 子任务（可选）</label>
+    <div id="sub-list"></div>
+    <button class="btn sm" data-act="sub-add" style="margin:4px 0 10px">＋ 添加子任务</button>
     <div class="row" style="margin-top:12px">
       <button class="btn ghost" data-act="modal-close">取消</button>
       <button class="btn primary full" data-act="review-task-save">添加</button>
@@ -1413,6 +1557,9 @@ function openTodayAddTask(preGid){
     <label class="fld">截止日期（可选）</label><input id="tat-due" type="date"/>
     <label class="fld">安排周次（留空 = 当前第 ${state.currentWeek} 周）</label>
     <select id="tat-week"><option value="">当前周（第 ${state.currentWeek} 周）</option>${weekOpts(state.currentWeek)}</select>
+    <label class="fld">📋 子任务（可选）</label>
+    <div id="sub-list"></div>
+    <button class="btn sm" data-act="sub-add" style="margin:4px 0 10px">＋ 添加子任务</button>
     <div class="row" style="margin-top:12px">
       <button class="btn ghost" data-act="modal-close">取消</button>
       <button class="btn primary full" data-act="today-task-save">添加</button>
@@ -1458,9 +1605,14 @@ function openQuickAddTask(gid,wk){
   quickAddGid=gid;quickAddWk=wk;
   const goal=findGoal(gid);
   openModal(`<div class="overlay"><div class="sheet">
-    <h2>＋ 第 ${wk} 周添加任务</h2><div class="sub">${esc(goal?goal.title:'')} · 只需填任务名</div>
+    <h2>＋ 第 ${wk} 周添加任务</h2><div class="sub">${esc(goal?goal.title:'')}</div>
     <label class="fld">任务名称</label><input id="qat-title" placeholder="如：完成第 3 章草稿" autofocus/>
-    <div class="row" style="margin-top:14px">
+    <label class="fld">优先级</label><select id="qat-priority">${['low','mid','high'].map(p=>`<option value="${p}"${p==='mid'?' selected':''}>${p==='high'?'高':p==='mid'?'中':'低'}</option>`).join('')}</select>
+    <label class="fld">截止日期（可选）</label><input id="qat-due" type="date"/>
+    <label class="fld">📋 子任务（可选）</label>
+    <div id="sub-list"></div>
+    <button class="btn sm" data-act="sub-add" style="margin:4px 0 10px">＋ 添加子任务</button>
+    <div class="row" style="margin-top:12px">
       <button class="btn ghost" data-act="modal-close">取消</button>
       <button class="btn primary full" data-act="qat-save">添加</button>
     </div></div></div>`);
@@ -1471,12 +1623,20 @@ function openQuickEditTask(gid,tid){
   const g=findGoal(gid); if(!g)return;
   const tk=g.tasks.find(x=>x.id===tid); if(!tk)return;
   const wv=tk.week||state.currentWeek;
+  const subRows=(tk.subtasks||[]).map(s=>`<div class="subedit-row" data-st="${s.id}">
+      <input type="checkbox" class="sub-done" ${s.done?'checked':''}/>
+      <input class="sub-title" value="${esc(s.title)}" placeholder="子任务内容"/>
+      <button class="sub-x" data-act="sub-del" data-st="${s.id}">✕</button>
+    </div>`).join('');
   openModal(`<div class="overlay"><div class="sheet">
     <h2>✏️ 编辑任务</h2>
     <label class="fld">任务名称</label><input id="qet-title" value="${esc(tk.title||'')}"/>
     <label class="fld">优先级</label><select id="qet-priority">${['low','mid','high'].map(p=>`<option value="${p}"${(tk.priority||'mid')===p?' selected':''}>${p==='high'?'高':p==='mid'?'中':'低'}</option>`).join('')}</select>
     <label class="fld">截止日期（可选）</label><input id="qet-due" type="date" value="${tk.due||''}"/>
     <label class="fld">安排周次</label><select id="qet-week">${weekOpts(wv)}</select>
+    <label class="fld">📋 子任务（可选）</label>
+    <div id="sub-list">${subRows}</div>
+    <button class="btn sm" data-act="sub-add" style="margin:4px 0 10px">＋ 添加子任务</button>
     <div class="row" style="margin-top:12px">
       <button class="btn ghost" data-act="modal-close">取消</button>
       <button class="btn danger" data-act="qet-del" data-gid="${gid}" data-tid="${tid}">删除</button>
@@ -1507,10 +1667,22 @@ document.addEventListener('click',async(e)=>{
     const gid=document.getElementById('rag-goal').value;
     const title=document.getElementById('rag-title').value.trim();
     const wv=document.getElementById('rag-week').value;
+    const pr=document.getElementById('rag-priority').value;
+    const due=document.getElementById('rag-due').value||null;
     if(!gid||!title){toast('请填写完整');return;}
     const g=findGoal(gid);if(!g)return;
+    // 读取子任务
+    const list=document.getElementById('sub-list');
+    const subs=[];
+    if(list){
+      list.querySelectorAll('.subedit-row').forEach(row=>{
+        const stitle=(row.querySelector('.sub-title').value||'').trim();
+        if(!stitle) return;
+        subs.push({ id:uid(), title:stitle, done:!!row.querySelector('.sub-done').checked });
+      });
+    }
     g.tasks=g.tasks||[];
-    g.tasks.push({id:uid(),title,week:wv?+wv:state.currentWeek,log:{},priority:'mid',due:null,mustDo:false});
+    g.tasks.push({id:uid(),title,week:wv?+wv:state.currentWeek,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
     save();closeModal();render();toast('已添加');
   }
 },{capture:true}); // 用 capture 确保能拦截到动态生成的按钮
@@ -1534,8 +1706,10 @@ let _dragTaskId=null,_dragGid=null;
 function initDrag(){
   // 桌面端 HTML5 DnD
   document.addEventListener('dragstart',e=>{
-    const item=e.target.closest('[data-drag-task]');
+    const gripEl=e.target.closest('.grip');
+    const item = gripEl ? gripEl.closest('[data-drag-task]') : e.target.closest('[data-drag-task]');
     if(!item)return;_dragTaskId=item.dataset.dragTask;_dragGid=item.dataset.dragGid;item.classList.add('dragging');e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',_dragTaskId);
+    if(gripEl && typeof e.dataTransfer.setDragImage==='function') e.dataTransfer.setDragImage(item,12,12);
     setTimeout(()=>item.style.display='none',0);
   });
   document.addEventListener('dragend',e=>{
@@ -1567,9 +1741,11 @@ function initDrag(){
   });
   // 移动端触摸拖拽
   let _touchEl=null,_touchGhost=null,_touchStartX=0,_touchStartY=0,_touchMoved=false;
+  function _startTouchDrag(item,e){ _touchEl=item;_touchMoved=false;const t=e.touches[0];_touchStartX=t.clientX;_touchStartY=t.clientY; }
   document.addEventListener('touchstart',e=>{
-    const item=e.target.closest('[data-drag-task]');
-    if(!item)return;_touchEl=item;_touchMoved=false;const t=e.touches[0];_touchStartX=t.clientX;_touchStartY=t.clientY;
+    // 所有任务：必须抓最左侧手柄才启动拖动，避免整行误触
+    const gripEl=e.target.closest('.grip');
+    if(gripEl){ const item=gripEl.closest('[data-drag-task]'); if(item)_startTouchDrag(item,e); }
   },{passive:true});
   document.addEventListener('touchmove',e=>{
     if(!_touchEl||!_touchEl.dataset.dragTask)return;
