@@ -769,7 +769,7 @@ function viewProjectDetail(gid){
   const w=state.currentWeek;
   const lags=g.lagging||[];
   let h='';
-  h+=`<div class="page-header"><div class="ph-row"><div><h1>🎯 ${esc(g.title)}</h1><p>第 ${w} 周 · 项目详情</p></div><button class="help-btn" data-act="proj-back">← 返回</button></div></div>`;
+  h+=`<div class="page-header"><div class="ph-row"><div><h1>🎯 ${esc(g.title)}</h1><button class="help-btn" data-act="rename-goal" data-gid="${g.id}">✏️标题</button><p>第 ${w} 周 · 项目详情</p></div><button class="help-btn" data-act="proj-back">← 返回</button></div></div>`;
   h+=`<div class="pad">`;
 
   // 区域一：滞后指标（编辑定义：名称/目标/方向；实际值在复盘时填）
@@ -805,6 +805,27 @@ function viewProjectDetail(gid){
 
   h+=`<div class="card"><h3 style="margin:0;margin-bottom:6px">✅ 任务（按周）<span class="muted" style="font-size:11px;font-weight:500;margin-left:6px">拖动任务到其他周可移动</span></h3>`;
   let anyTask=false;
+  // 未分配（置顶模块，独立于「前 N-1 周」折叠，默认展开）
+  {
+    const unTasks=(g.tasks||[]).filter(t=>!t.week||t.week<1||t.week>12);
+    h+=`<div class="wk-group" data-wk-group="${g.id}-un">
+      <div class="wk-toggle" data-act="wk-toggle" data-gid="${g.id}" data-wk="un">
+        <span>📋 未分配${unTasks.length>0?' ('+unTasks.length+')':''}</span>
+        <span style="display:flex;align-items:center;gap:4px">
+          <button class="wk-add" data-act="wk-add-task" data-gid="${g.id}" data-wk="0">＋</button>
+          <span class="wk-arrow">▾</span>
+        </span>
+      </div>
+      <div class="wk-body" id="wk-${g.id}-un" style="display:block;">`;
+    if(unTasks.length>0){
+      anyTask=true;
+      unTasks.forEach(t=>{
+        const done=!!(t.log&&t.log[0]);
+        h+=`<div class="item${done?' done':''}" data-drag-task="${t.id}" data-drag-gid="${g.id}" data-g="${g.id}" data-t="${t.id}" data-w="0"><div class="grip" draggable="true" title="拖动到其他周分配"></div><div class="chk" data-act="task-toggle" data-g="${g.id}" data-t="${t.id}" data-w="0">${done?'✓':''}</div><div class="it-title" data-act="task-edit" data-g="${g.id}" data-t="${t.id}" data-w="0">${subCaretHTML(g,t,0,done)}${esc(t.title)}</div></div>${subRowsHTML(g,t,0)}`;
+      });
+    }
+    h+=`</div></div>`;
+  }
   const cur=state.currentWeek;
   // 当前周之前的周：聚合为一个「前 N-1 周」折叠入口，默认收起；内部每周也是独立折叠行
   if(cur>1){
@@ -1083,7 +1104,7 @@ function viewSettings(){
     <div class="row" style="margin-top:6px"><button class="btn full" data-act="export">导出 / 备份</button><button class="btn full" data-act="import">导入 / 恢复</button></div>
     <button class="btn danger full" data-act="reset" style="margin-top:6px">清空全部数据</button>
   </div>`;
-  h+=`<div class="card"><h3>💡 关于</h3><p class="muted">基于《The 12 Week Year》方法论：把 1 年目标压进 12 周，用滞后指标看结果、引领指标管行动，每周复盘执行度。</p></div>`;
+  h+=`<div class="card"><h3>💡 关于</h3><p class="muted">本网页由羊皮梨基于 The 12 Week Year 方法论自主设计，禁止外传，禁止用于商业用途。如果对 App 有问题或疑问，可以联系羊皮梨本人，微信号：745319145。</p></div>`;
   h+=`</div>`; return h;
 }
 
@@ -1186,7 +1207,7 @@ document.addEventListener('click',async(e)=>{
     else if(act==='plan-lag-del'){const g=currentModalGoal;g.lagging=(g.lagging||[]).filter(x=>x.id!==t.dataset.iid);save();openPlan(g);}
     else if(act==='plan-hab-add'){const g=currentModalGoal;g.habits=g.habits||[];const w=state.currentWeek;g.habits.push({id:uid(),title:'',weeks:Array.from({length:13-w},(_,i)=>w+i),perWeek:1,startDate:todayKey(),log:{}});save();openPlan(g);}
     else if(act==='plan-hab-del'){const g=currentModalGoal;g.habits=(g.habits||[]).filter(x=>x.id!==t.dataset.iid);save();openPlan(g);}
-    else if(act==='plan-task-add'){const g=currentModalGoal;g.tasks=g.tasks||[];g.tasks.push({id:uid(),title:'',week:state.currentWeek,log:{},priority:'mid',due:weekEndDate(state.currentWeek),mustDo:false});save();openPlan(g);}
+    else if(act==='plan-task-add'){const g=currentModalGoal;g.tasks=g.tasks||[];g.tasks.push({id:uid(),title:'',week:0,log:{},priority:'mid',due:weekEndDate(state.currentWeek),mustDo:false});save();openPlan(g);}
     else if(act==='plan-task-del'){const g=currentModalGoal;g.tasks=(g.tasks||[]).filter(x=>x.id!==t.dataset.iid);save();openPlan(g);}
     else if(act==='plan-ai'){await runPlanAI(currentModalGoal);}
     else if(act==='plan-save'){save();closeModal();render();toast('已保存');}
@@ -1348,7 +1369,7 @@ document.addEventListener('click',async(e)=>{
       }
       g.tasks=g.tasks||[];
       g.tasks.push({id:uid(),title,week:quickAddWk,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
-      save();closeModal();render();toast('已添加到第 '+quickAddWk+' 周');
+      save();closeModal();render();toast(quickAddWk===0?'已添加到未分配':('已添加到第 '+quickAddWk+' 周'));
     }
     // 详情页任务按周折叠
     else if(act==='wk-toggle'){
@@ -1379,7 +1400,7 @@ document.addEventListener('click',async(e)=>{
         });
       }
       g.tasks=g.tasks||[];
-      g.tasks.push({id:uid(),title,week:wv?+wv:state.currentWeek,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
+      g.tasks.push({id:uid(),title,week:(wv===''||wv==null)?state.currentWeek:+wv,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
       save();closeModal();render();toast('已添加');
     }
     else if(act==='today-habit-save'){
@@ -1437,6 +1458,8 @@ document.addEventListener('click',async(e)=>{
     else if(act==='exp-download'){const blob=new Blob([document.getElementById('exp-ta').value],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='12week-backup.json';a.click();toast('已下载');}
     else if(act==='imp-pick'){document.getElementById('imp-file').click();}
     else if(act==='imp-do'){const ta=document.getElementById('imp-ta');doRestore(ta?ta.value.trim():'');}
+    else if(act==='rename-goal'){const g=findGoal(t.dataset.gid); if(!g)return; const n=prompt('修改项目标题',g.title); if(n!==null&&n.trim()!==''){g.title=n.trim(); save(); render(); toast('✅ 标题已更新');}}
+    else if(act==='edit-bg'){const g=findGoal(t.dataset.gid); if(!g)return; const n=prompt('修改项目背景',g.background||''); if(n!==null){g.background=n; save(); render(); toast('✅ 背景已更新');}}
     else if(act==='reset'){if(confirm('确定清空？不可恢复')){state=defaultState();save();render();toast('已清空');}}
 
     // 长按编辑：任务保存 / 删除
@@ -1510,16 +1533,14 @@ function openGoalModal(){
 
 function openHelp(){
   openModal(`<div class="overlay"><div class="sheet">
-    <h2>📖 使用指南</h2><div class="sub">四步上手。</div>
-    <div class="help-q">① 三个页面分别做什么？</div>
-    <p class="help-a"><strong>今天</strong>：每天打开只看「今天还有什么没做」，快速打卡。<br><strong>项目</strong>：管理你的所有目标，编辑滞后指标/习惯/任务。<br><strong>复盘</strong>：每周末回顾——填滞后指标实际值看结果达成率，看习惯和任务完成了多少。</p>
-    <div class="help-q">② 滞后 vs 引领指标？</div>
-    <p class="help-a"><strong>滞后</strong>= 结果（如收入、体脂率），每周末在「复盘」页填实际值。<br><strong>引领</strong>= 你的行动（习惯+任务）。本工具里不需要单独填引领指标——你每天打卡的习惯和勾掉的任务，就是引领指标的执行度。「复盘」页的两个环就是它。</p>
-    <div class="help-q">③ 习惯怎么打卡？</div>
-    <p class="help-a">在「今天」页看到每周一到日的格子，完成一次点一下打 ✓。旁边显示完成百分比。</p>
-    <div class="help-q">④ 怎么新建项目？</div>
-    <p class="help-a">在「项目」页点「+ 新建项目」，填目标和背景后直接点「🤖 AI 分解任务」。AI 会一次性给出滞后指标、习惯、任务的建议，你都能改、删、自己加。</p>
-    <div class="help-tip">💡 不会填？直接让 AI 先给一版，再改成自己的就行。</div>
+    <h2>📖 新手三步上手</h2><div class="sub">完全没用过 12 周？跟着走一遍就会了。</div>
+    <div class="help-q">① 先搞懂：12 周到底是什么？</div>
+    <p class="help-a">《The 12 Week Year》（12 周工作法）把"一年要达成的目标"压缩进"12 周（约 3 个月）"去完成。<br>为什么？——一年太远，容易一直拖；12 周够短，能看清进度、逼自己动起来。<br>这套方法有两个核心概念：<br><strong>滞后指标</strong> = 你想看到的"结果"（比如月收入、体重、读完的书）。<br><strong>引领指标</strong> = 你每天/每周做的"行动"（习惯 + 任务），它真正决定结果能不能达成。<br>这个 App 就是把这一套装进手机：12 周倒计时，帮你盯结果、管行动。</p>
+    <div class="help-q">② 去「设置」做两件准备</div>
+    <p class="help-a">点底部（或右上角）的「⚙️ 设置」：<br><strong>(a) 定日期</strong>：在「📅 12 周时间锚点」里，填"今天是 12 周的第几周、周几"。绑定后，"本周"会跟着手机真实日期自动往前走，以后不用每次手选周。<br><strong>(b) 接 AI（可选但推荐）</strong>：在「⚙️ AI 设置」填入你的 AI 服务商和 API Key。这样下一步建项目时，能直接让 AI 帮你分析"为了达成这个目标，该培养哪些关键习惯、做哪些关键任务"。没有 API 也没关系——所有内容都能手动填，AI 只是帮你起个头。</p>
+    <div class="help-q">③ 新建你的第一个项目</div>
+    <p class="help-a">回到「🎯 项目」标签页 → 点「+ 新建项目」，填好"目标"和"背景"，然后：<br><strong>滞后指标</strong>：你想达成的结果（可以加多个）。<br><strong>习惯</strong>：每周要稳定做的动作。<br><strong>任务</strong>：具体待办（一时想不清排哪周？先选"未分配"，之后拖到对应周即可）。<br>不会填？点「🤖 AI」按钮，AI 会一次性给出滞后指标 / 习惯 / 任务的建议，你照着改、删、自己加就行。</p>
+    <div class="help-tip">💡 之后的日常：每天打开「今天」打卡习惯、勾掉任务；每周末进「复盘」看结果达成率。就这么循环 12 周。</div>
     <div class="row" style="margin-top:12px"><button class="btn primary full" data-act="modal-close">开始使用</button></div>
   </div></div>`);
 }
@@ -1546,6 +1567,7 @@ async function runPlanAI(g){
 }
 
 function weekOpts(sel){return Array.from({length:12},(_,i)=>{const n=i+1;return`<option${n===sel?' selected':''}>${n}</option>`;}).join('');}
+function taskWeekOpts(sel){const o=[`<option value="0"${sel===0?' selected':''}>未分配</option>`];for(let i=0;i<12;i++){const n=i+1;o.push(`<option value="${n}"${n===sel?' selected':''}>${n}</option>`);}return o.join('');}
 
 /* 统一分解/编辑页 */
 function openPlan(g){
@@ -1570,7 +1592,7 @@ function openPlan(g){
   const taskRows=(g.tasks||[]).map(tk=>`<div class="plan-row">
     <input class="plan-in" data-tk="title" data-iid="${tk.id}" placeholder="任务名称" value="${esc(tk.title||'')}"/>
     <div class="plan-line"><span class="lbl">安排周次</span>
-      <select class="plan-sel" data-tk="week" data-iid="${tk.id}">${weekOpts(tk.week||1)}</select>
+      <select class="plan-sel" data-tk="week" data-iid="${tk.id}">${taskWeekOpts(tk.week)}</select>
       <button class="del sm" data-act="plan-task-del" data-iid="${tk.id}">✕</button>
     </div>
     <div class="plan-line"><span class="lbl">优先级</span>
@@ -1582,7 +1604,7 @@ function openPlan(g){
   const spin=planLoading?`<div style="display:flex;align-items:center;gap:7px;justify-content:center;color:var(--muted);font-size:12.5px;padding:14px 0;margin-top:6px"><span class="spinner"></span>AI 正在分解…</div>`:'';
   openModal(`<div class="overlay"><div class="sheet">
     <h2>🤖 分解任务目标</h2><div class="sub">「${esc(g.title)}」— 可直接改、删、加</div>
-    ${g.background?`<div class="plan-bg">📌 ${esc(g.background)}</div>`:''}
+    <div class="plan-bg">📌 ${esc(g.background)||"（暂无背景，点✏️添加）"} <button class="help-btn" data-act="edit-bg" data-gid="${g.id}">✏️</button></div>
     <div class="sec-title">📈 滞后指标（结果）</div><div id="plan-lag">${lagRows}</div><button class="btn sm" data-act="plan-lag-add" style="margin:5px 0 3px">+ 添加滞后指标</button>
     <div class="sec-title">🔁 习惯 Habits</div><div id="plan-hab">${habRows}</div><button class="btn sm" data-act="plan-hab-add" style="margin:5px 0 3px">+ 添加习惯</button>
     <div class="sec-title">✅ 任务 Tasks</div><div id="plan-task">${taskRows}</div><button class="btn sm" data-act="plan-task-add" style="margin:5px 0 3px">+ 添加任务</button>
@@ -1621,8 +1643,8 @@ function openReviewAddTask(){
     <label class="fld">任务名称</label><input id="rag-title" placeholder="如：发布第一篇小红书笔记"/>
     <label class="fld">优先级</label><select id="rag-priority">${['low','mid','high'].map(p=>`<option value="${p}"${p==='mid'?' selected':''}>${p==='high'?'高':p==='mid'?'中':'低'}</option>`).join('')}</select>
     <label class="fld">截止日期（可选，默认本周日）</label><input id="rag-due" type="date" value="${weekEndDate(state.currentWeek)}"/>
-    <label class="fld">安排周次（留空 = 当前第 ${state.currentWeek} 周）</label>
-    <select id="rag-week"><option value="">当前周（第 ${state.currentWeek} 周）</option>${weekOpts(state.currentWeek)}</select>
+    <label class="fld">安排周次（默认：未分配，之后可拖动分配）</label>
+    <select id="rag-week">${taskWeekOpts(0)}</select>
     <label class="fld">📋 子任务（可选）</label>
     <div id="sub-list"></div>
     <button class="btn sm" data-act="sub-add" style="margin:4px 0 10px">＋ 添加子任务</button>
@@ -1641,8 +1663,8 @@ function openTodayAddTask(preGid){
     <label class="fld">任务名称</label><input id="tat-title" placeholder="如：完成第 3 章草稿"/>
     <label class="fld">优先级</label><select id="tat-priority">${['low','mid','high'].map(p=>`<option value="${p}"${p==='mid'?' selected':''}>${p==='high'?'高':p==='mid'?'中':'低'}</option>`).join('')}</select>
     <label class="fld">截止日期（可选，默认本周日）</label><input id="tat-due" type="date" value="${weekEndDate(state.currentWeek)}"/>
-    <label class="fld">安排周次（留空 = 当前第 ${state.currentWeek} 周）</label>
-    <select id="tat-week"><option value="">当前周（第 ${state.currentWeek} 周）</option>${weekOpts(state.currentWeek)}</select>
+    <label class="fld">安排周次（默认：未分配，之后可拖动分配）</label>
+    <select id="tat-week">${taskWeekOpts(0)}</select>
     <label class="fld">📋 子任务（可选）</label>
     <div id="sub-list"></div>
     <button class="btn sm" data-act="sub-add" style="margin:4px 0 10px">＋ 添加子任务</button>
@@ -1693,7 +1715,7 @@ function openQuickAddTask(gid,wk){
   quickAddGid=gid;quickAddWk=wk;
   const goal=findGoal(gid);
   openModal(`<div class="overlay"><div class="sheet">
-    <h2>＋ 第 ${wk} 周添加任务</h2><div class="sub">${esc(goal?goal.title:'')}</div>
+    <h2>＋ ${wk===0?'未分配':('第 '+wk+' 周')} 添加任务</h2><div class="sub">${esc(goal?goal.title:'')}</div>
     <label class="fld">任务名称</label><input id="qat-title" placeholder="如：完成第 3 章草稿" autofocus/>
     <label class="fld">优先级</label><select id="qat-priority">${['low','mid','high'].map(p=>`<option value="${p}"${p==='mid'?' selected':''}>${p==='high'?'高':p==='mid'?'中':'低'}</option>`).join('')}</select>
     <label class="fld">截止日期（可选，默认本周日）</label><input id="qat-due" type="date" value="${weekEndDate(quickAddWk||state.currentWeek)}"/>
@@ -1710,7 +1732,7 @@ function openQuickAddTask(gid,wk){
 function openQuickEditTask(gid,tid){
   const g=findGoal(gid); if(!g)return;
   const tk=g.tasks.find(x=>x.id===tid); if(!tk)return;
-  const wv=tk.week||state.currentWeek;
+  const wv=(tk.week==null)?state.currentWeek:tk.week;
   const subRows=(tk.subtasks||[]).map(s=>`<div class="subedit-row" data-st="${s.id}">
       <input type="checkbox" class="sub-done" ${s.done?'checked':''}/>
       <input class="sub-title" value="${esc(s.title)}" placeholder="子任务内容"/>
@@ -1721,7 +1743,7 @@ function openQuickEditTask(gid,tid){
     <label class="fld">任务名称</label><input id="qet-title" value="${esc(tk.title||'')}"/>
     <label class="fld">优先级</label><select id="qet-priority">${['low','mid','high'].map(p=>`<option value="${p}"${(tk.priority||'mid')===p?' selected':''}>${p==='high'?'高':p==='mid'?'中':'低'}</option>`).join('')}</select>
     <label class="fld">截止日期（可选）</label><input id="qet-due" type="date" value="${tk.due||''}"/>
-    <label class="fld">安排周次</label><select id="qet-week">${weekOpts(wv)}</select>
+    <label class="fld">安排周次</label><select id="qet-week">${taskWeekOpts(wv)}</select>
     <label class="fld">📋 子任务（可选）</label>
     <div id="sub-list">${subRows}</div>
     <button class="btn sm" data-act="sub-add" style="margin:4px 0 10px">＋ 添加子任务</button>
@@ -1770,7 +1792,7 @@ document.addEventListener('click',async(e)=>{
       });
     }
     g.tasks=g.tasks||[];
-    g.tasks.push({id:uid(),title,week:wv?+wv:state.currentWeek,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
+    g.tasks.push({id:uid(),title,week:(wv===''||wv==null)?state.currentWeek:+wv,log:{},priority:pr,due:due,mustDo:false,subtasks:subs});
     save();closeModal();render();toast('已添加');
   }
 },{capture:true}); // 用 capture 确保能拦截到动态生成的按钮
@@ -1896,8 +1918,9 @@ function initDrag(){
         if(drop.dataset.drop) setMustDo(_dragGid,_dragTaskId, drop.dataset.drop==='mustdo');
         else if(drop.dataset.wkGroup){
           const parts=drop.dataset.wkGroup.split('-');
-          const targetGid=parts[0],targetWk=+parts[1];
-          if(targetGid===_dragGid)moveTaskToWeek(_dragGid,_dragTaskId,targetWk);
+          const targetGid=parts[0];
+          const targetWk=parts[1]==='un'?0:+parts[1];
+          if(targetGid===_dragGid && (targetWk===0||(targetWk>=1&&targetWk<=12)))moveTaskToWeek(_dragGid,_dragTaskId,targetWk);
         }
       }
       document.querySelectorAll('.drop-over').forEach(x=>x.classList.remove('drop-over'));
@@ -1910,8 +1933,9 @@ function initDrag(){
 function moveTaskToWeek(gid,tid,newWeek){
   const g=findGoal(gid);if(!g)return;
   const tk=g.tasks.find(x=>x.id===tid);if(!tk)return;
-  if(tk.week===newWeek){toast('任务已在第 '+newWeek+' 周');return;}
-  const old=tk.week;tk.week=newWeek;save();render();toast(`已从第 ${old} 周移到第 ${newWeek} 周`);
+  const wkLabel=w=>w===0?'未分配':('第 '+w+' 周');
+  if(tk.week===newWeek){toast('任务已在'+wkLabel(newWeek));return;}
+  const old=tk.week;tk.week=newWeek;save();render();toast(`已从${wkLabel(old)}移到${wkLabel(newWeek)}`);
 }
 
 /* ============================ 启动 ============================ */
